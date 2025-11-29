@@ -10,12 +10,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.runanywhere.startup_hackathon20.ui.theme.Startup_hackathon20Theme
 import com.runanywhere.startup_hackathon20.ui.MainScreen
+import com.runanywhere.startup_hackathon20.ui.onboarding.OnboardingScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -23,8 +25,42 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             Startup_hackathon20Theme {
-                MainScreen()
+                AppContent()
             }
+        }
+    }
+}
+
+@Composable
+fun AppContent(viewModel: ChatViewModel = viewModel()) {
+    val availableModels by viewModel.availableModels.collectAsState()
+    var isCheckingStatus by remember { mutableStateOf(true) }
+    var showOnboarding by remember { mutableStateOf(true) }
+
+    val targetModelName = "Phi-3 Mini 4k Instruct (Q4)"
+
+    LaunchedEffect(availableModels) {
+        if (availableModels.isNotEmpty()) {
+            val targetModel = availableModels.find { it.name == targetModelName }
+            if (targetModel?.isDownloaded == true) {
+                showOnboarding = false
+            }
+            isCheckingStatus = false
+        }
+    }
+
+    if (isCheckingStatus) {
+        // Show a simple loading screen while checking model status
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator()
+        }
+    } else {
+        if (showOnboarding) {
+            OnboardingScreen(
+                onSetupComplete = { showOnboarding = false }
+            )
+        } else {
+            MainScreen()
         }
     }
 }

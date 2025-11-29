@@ -53,5 +53,19 @@ class MyApplication : Application() {
             name = "Qwen 2.5 0.5B Instruct Q6_K",
             type = "LLM"
         )
+
+        // Power Model: Phi-3 Mini 4k (High Performance) - approx 2.3 GB
+        addModelFromURL(
+            url = "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf",
+            name = "Phi-3 Mini 4k (High Performance)",
+            type = "LLM"
+        )
+
+        // Safe Model: Qwen 2.5 1.5B (Balanced) - approx 1.2 GB
+        addModelFromURL(
+            url = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q6_k.gguf",
+            name = "Qwen 2.5 1.5B (Balanced)",
+            type = "LLM"
+        )
     }
 }
