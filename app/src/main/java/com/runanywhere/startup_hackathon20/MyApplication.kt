@@ -23,6 +23,8 @@ class MyApplication : Application() {
 
     private suspend fun initializeSDK() {
         try {
+            Log.i("MyApp", "Starting SDK initialization...")
+            
             // Step 1: Initialize SDK
             RunAnywhere.initialize(
                 context = this@MyApplication,
@@ -39,33 +41,36 @@ class MyApplication : Application() {
             // Step 4: Scan for previously downloaded models
             RunAnywhere.scanForDownloadedModels()
 
+            // Log all available models for debugging
+            val availableModels = com.runanywhere.sdk.public.extensions.listAvailableModels()
             Log.i("MyApp", "SDK initialized successfully")
+            Log.i("MyApp", "Available models (${availableModels.size}):")
+            availableModels.forEach { model ->
+                Log.i("MyApp", "  - ID: '${model.id}' | Name: '${model.name}' | Downloaded: ${model.isDownloaded}")
+            }
+
+            SDKState.setInitialized(true)
 
         } catch (e: Exception) {
-            Log.e("MyApp", "SDK initialization failed: ${e.message}")
+            Log.e("MyApp", "SDK initialization failed: ${e.message}", e)
+            SDKState.setInitialized(false, e.message ?: "Unknown error")
         }
     }
 
     private suspend fun registerModels() {
-        // Medium-sized model - better quality (374 MB)
-        addModelFromURL(
-            url = "https://huggingface.co/Triangle104/Qwen2.5-0.5B-Instruct-Q6_K-GGUF/resolve/main/qwen2.5-0.5b-instruct-q6_k.gguf",
-            name = "Qwen 2.5 0.5B Instruct Q6_K",
-            type = "LLM"
-        )
-
-        // Power Model: Phi-3 Mini 4k (High Performance) - approx 2.3 GB
-        addModelFromURL(
-            url = "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf",
-            name = "Phi-3 Mini 4k (High Performance)",
-            type = "LLM"
-        )
-
-        // Safe Model: Qwen 2.5 1.5B (Balanced) - approx 1.2 GB
+        // START FINAL REGISTRATION LOGIC (Using official names for maximum stability)
+        // 1. High Performance Model (1.2 GB)
         addModelFromURL(
             url = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q6_k.gguf",
-            name = "Qwen 2.5 1.5B (Balanced)",
+            name = "Qwen 2.5 1.5B Instruct Q6_K", // EXACT OFFICIAL NAME
             type = "LLM"
         )
+        // 2. Balanced Safety Model (374 MB)
+        addModelFromURL(
+            url = "https://huggingface.co/Triangle104/Qwen2.5-0.5B-Instruct-Q6_K-GGUF/resolve/main/qwen2.5-0.5b-instruct-q6_k.gguf",
+            name = "Qwen 2.5 0.5B Instruct Q6_K", // EXACT OFFICIAL NAME
+            type = "LLM"
+        )
+        // END FINAL REGISTRATION LOGIC
     }
 }

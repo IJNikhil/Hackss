@@ -1,79 +1,191 @@
 package com.runanywhere.startup_hackathon20.ui.onboarding
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.runanywhere.startup_hackathon20.ChatViewModel
-import kotlinx.coroutines.delay
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkManager
-import androidx.work.workDataOf
-import com.runanywhere.startup_hackathon20.workers.LlmWorker
-import android.content.Context
+import com.runanywhere.startup_hackathon20.NeuralEngine
+import com.runanywhere.startup_hackathon20.SDKState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
+// ViewModel to handle state and NeuralEngine interactions
+class OnboardingViewModel : ViewModel() {
+    private val _downloadProgress = MutableStateFlow<Float?>(null)
+    val downloadProgress: StateFlow<Float?> = _downloadProgress.asStateFlow()
+
+    private val _isDownloading = MutableStateFlow(false)
+    val isDownloading: StateFlow<Boolean> = _isDownloading.asStateFlow()
+
+    private val _isDownloadComplete = MutableStateFlow(false)
+    val isDownloadComplete: StateFlow<Boolean> = _isDownloadComplete.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    // Dynamic Model IDs
+    private val _highPerfModelId = MutableStateFlow<String?>(null)
+    val highPerfModelId: StateFlow<String?> = _highPerfModelId.asStateFlow()
+
+    private val _balancedModelId = MutableStateFlow<String?>(null)
+    val balancedModelId: StateFlow<String?> = _balancedModelId.asStateFlow()
+
+    fun resolveModelIds() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val models = com.runanywhere.sdk.public.extensions.listAvailableModels()
+                Log.d("OnboardingViewModel", "Resolving IDs from ${models.size} models")
+                models.forEach { Log.d("OnboardingViewModel", "Available: ${it.name} -> ${it.id}") }
+                
+                // Match by the EXACT OFFICIAL NAMES we registered in MyApplication.kt
+                val highPerfName = "Qwen 2.5 1.5B Instruct Q6_K"
+                val balancedName = "Qwen 2.5 0.5B Instruct Q6_K"
+
+                // Robust matching: Exact match -> Partial match -> Fallback to Name
+                val highPerfModel = models.find { it.name == highPerfName }
+                    ?: models.find { it.name.contains("1.5B", ignoreCase = true) }
+                
+                val balancedModel = models.find { it.name == balancedName }
+                    ?: models.find { it.name.contains("0.5B", ignoreCase = true) }
+
+                _highPerfModelId.value = highPerfModel?.id ?: highPerfName
+                _balancedModelId.value = balancedModel?.id ?: balancedName
+                
+                if (highPerfModel == null) Log.w("OnboardingViewModel", "High Perf model exact match failed, using fallback: ${_highPerfModelId.value}")
+                if (balancedModel == null) Log.w("OnboardingViewModel", "Balanced model exact match failed, using fallback: ${_balancedModelId.value}")
+            } catch (e: Exception) {
+                Log.e("OnboardingViewModel", "Failed to resolve model IDs", e)
+            }
+        }
+    }
+
+    fun startDownload(modelId: String) {
+        if (_isDownloading.value) {
+            Log.d("OnboardingViewModel", "Download already in progress")
+            return
+        }
+
+        if (!SDKState.isInitialized.value) {
+            _errorMessage.value = "SDK is still initializing. Please wait..."
+            Log.e("OnboardingViewModel", "Attempted download before SDK initialization")
+            return
+        }
+
+        _errorMessage.value = null
+        Log.d("OnboardingViewModel", "Starting download for model: $modelId")
+        
+        viewModelScope.launch(Dispatchers.IO) {
+            _isDownloading.value = true
+            try {
+                Log.d("OnboardingViewModel", "Calling NeuralEngine.downloadModel with ID: $modelId")
+                NeuralEngine.downloadModel(modelId).collect { progress ->
+                    Log.d("OnboardingViewModel", "Download progress: $progress")
+                    _downloadProgress.value = progress
+                }
+                Log.d("OnboardingViewModel", "Download complete")
+                _downloadProgress.value = null
+                _errorMessage.value = "Download complete!"
+                _isDownloadComplete.value = true
+            } catch (e: Exception) {
+                Log.e("OnboardingViewModel", "Error downloading model", e)
+                _downloadProgress.value = null
+                _errorMessage.value = "Download failed: ${e.message}"
+            } finally {
+                _isDownloading.value = false
+            }
+        }
+    }
+
+    fun clearError() {
+        _errorMessage.value = null
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OnboardingScreen(
-    onSetupComplete: () -> Unit,
-    viewModel: ChatViewModel = viewModel()
+    onSetupComplete: () -> Unit = {},
+    viewModel: OnboardingViewModel = viewModel()
 ) {
     val context = LocalContext.current
-    val availableModels by viewModel.availableModels.collectAsState()
     val downloadProgress by viewModel.downloadProgress.collectAsState()
-    val statusMessage by viewModel.statusMessage.collectAsState()
+    val isDownloading by viewModel.isDownloading.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val sdkInitialized by SDKState.isInitialized.collectAsState()
+    val sdkError by SDKState.initializationError.collectAsState()
+    val isDownloadComplete by viewModel.isDownloadComplete.collectAsState()
 
-    // Model Options
-    val powerModelName = "Phi-3 Mini 4k (High Performance)"
-    val safeModelName = "Qwen 2.5 1.5B (Balanced)"
+    // Navigate when download completes
+    LaunchedEffect(isDownloadComplete) {
+        if (isDownloadComplete) {
+            onSetupComplete()
+        }
+    }
 
-    // Use rememberSaveable to persist selection across configuration changes (theme switch, rotation)
-    var selectedModelName by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(powerModelName) }
+    // Dynamic Model IDs
+    val highPerfModelId by viewModel.highPerfModelId.collectAsState()
+    val balancedModelId by viewModel.balancedModelId.collectAsState()
+
+    // Trigger ID resolution when SDK is initialized
+    LaunchedEffect(sdkInitialized) {
+        if (sdkInitialized) {
+            viewModel.resolveModelIds()
+        }
+    }
+
+    // State for selected model - default to High Perf if available, or null
+    var selectedModelId by rememberSaveable { mutableStateOf<String?>(null) }
     
-    // Local state to show immediate feedback when button is clicked
-    var isInitializing by remember { mutableStateOf(false) }
+    // Auto-select high perf model once resolved
+    LaunchedEffect(highPerfModelId) {
+        if (selectedModelId == null && highPerfModelId != null) {
+            selectedModelId = highPerfModelId
+        }
+    }
 
-    // Find the target model based on selection
-    val targetModel = availableModels.find { it.name == selectedModelName }
-
-    // Permission Launcher
+    // Permission State
     var hasNotificationPermission by remember {
         mutableStateOf(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                androidx.core.content.ContextCompat.checkSelfPermission(
+                ContextCompat.checkSelfPermission(
                     context,
                     Manifest.permission.POST_NOTIFICATIONS
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                ) == PackageManager.PERMISSION_GRANTED
             } else {
                 true
             }
         )
     }
 
+    // Permission Launcher
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission(),
         onResult = { isGranted ->
@@ -81,275 +193,253 @@ fun OnboardingScreen(
         }
     )
 
-    // Check if ALREADY downloaded
-    LaunchedEffect(availableModels, selectedModelName) {
-        if (targetModel?.isDownloaded == true) {
-            onSetupComplete()
-        }
-    }
-
-    // Auto-refresh logic if model is missing
-    LaunchedEffect(targetModel) {
-        if (targetModel == null) {
-            while(true) {
-                delay(3000)
-                viewModel.refreshModels()
+    Scaffold(
+        topBar = {
+            CenterAlignedTopAppBar(
+                title = {
+                    Text(
+                        "Secure AI Vault Setup",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                    titleContentColor = MaterialTheme.colorScheme.onBackground
+                )
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background,
+        snackbarHost = {
+            if (errorMessage != null) {
+                Snackbar(
+                    modifier = Modifier.padding(16.dp),
+                    action = {
+                        TextButton(onClick = { viewModel.clearError() }) {
+                            Text("Dismiss")
+                        }
+                    }
+                ) {
+                    Text(errorMessage!!)
+                }
             }
         }
-    }
-
-    Scaffold(
-        containerColor = MaterialTheme.colorScheme.surface
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 24.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
-            // 1. Header
-            Spacer(modifier = Modifier.height(24.dp))
-            Icon(
-                imageVector = Icons.Filled.Security,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Secure AI Vault",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "Select your intelligence engine",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(32.dp))
-
-            // 2. Model Selector
-            Text(
-                text = "Select Intelligence Engine",
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
+            ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Disable selection if downloading or initializing
-            val isLocked = downloadProgress != null || isInitializing
-
-            ModelOptionCard(
-                title = "High Performance (Phi-3)",
-                description = "Smartest. Best for Legal/Finance. Requires 2.3GB.",
-                icon = Icons.Filled.Bolt,
-                isSelected = selectedModelName == powerModelName,
-                isEnabled = !isLocked,
-                onClick = { selectedModelName = powerModelName }
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            ModelOptionCard(
-                title = "Balanced Mode (Qwen)",
-                description = "Faster. Good for General tasks. Requires 1.2GB.",
-                icon = Icons.Filled.Shield,
-                isSelected = selectedModelName == safeModelName,
-                isEnabled = !isLocked,
-                onClick = { selectedModelName = safeModelName }
-            )
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // 3. Action Area
-            if (downloadProgress != null) {
+                shape = RoundedCornerShape(24.dp),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+            ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Bottom
-                    ) {
-                        Text(
-                            text = "Downloading...",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "${(downloadProgress!! * 100).toInt()}%",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                    LinearProgressIndicator(
-                        progress = { downloadProgress!! },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(12.dp),
-                        strokeCap = androidx.compose.ui.graphics.StrokeCap.Round,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                    // Header Icon
+                    Icon(
+                        imageVector = Icons.Filled.Security,
+                        contentDescription = "Secure AI Icon",
+                        modifier = Modifier.size(56.dp),
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Spacer(modifier = Modifier.height(24.dp))
+
+                    // Title
                     Text(
-                        text = "Please keep the app open",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        text = "AI Vault Setup",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
                     )
+
                     Spacer(modifier = Modifier.height(8.dp))
-                    TextButton(onClick = { viewModel.cancelDownload() }) {
-                        Text("Cancel", color = MaterialTheme.colorScheme.error)
-                    }
-                }
-            } else {
-                Button(
-                    onClick = {
-                        if (isInitializing) return@Button
-                        
-                        // Check for Notification Permission on Android 13+
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
-                            permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+
+                    // Description
+                    Text(
+                        text = "Select your preferred intelligence level.\nAll processing is performed locally.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center
+                    )
+
+                    // SDK Initialization Status
+                    if (!sdkInitialized) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        if (sdkError != null) {
+                            Text(
+                                text = "⚠️ Initialization failed: $sdkError",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error,
+                                textAlign = TextAlign.Center
+                            )
                         } else {
-                            targetModel?.let { model ->
-                                isInitializing = true
-                                viewModel.downloadModel(model.id)
-                            } ?: run {
-                                viewModel.refreshModels()
+                            Row(
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Initializing AI engine...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = MaterialTheme.shapes.large,
-                    enabled = !isInitializing, 
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
+                    }
+
+                    Spacer(modifier = Modifier.height(32.dp))
+
+                    // Model Selection Cards
+                    SelectableModelCard(
+                        title = "High Performance",
+                        subtitle = "Qwen 2.5 1.5B",
+                        isSelected = selectedModelId == highPerfModelId,
+                        onClick = { if (!isDownloading && highPerfModelId != null) selectedModelId = highPerfModelId },
+                        enabled = sdkInitialized && highPerfModelId != null
                     )
-                ) {
-                    if (targetModel == null || isInitializing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            strokeWidth = 2.dp
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    SelectableModelCard(
+                        title = "Balanced",
+                        subtitle = "Qwen 2.5 0.5B",
+                        isSelected = selectedModelId == balancedModelId,
+                        onClick = { if (!isDownloading && balancedModelId != null) selectedModelId = balancedModelId },
+                        enabled = sdkInitialized && balancedModelId != null
+                    )
+
+                    Spacer(modifier = Modifier.height(32.dp))
+
+                    // Progress Indicator
+                    if (isDownloading && downloadProgress != null) {
+                        LinearProgressIndicator(
+                            progress = { downloadProgress!! },
+                            modifier = Modifier.fillMaxWidth(),
                         )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(if (isInitializing) "Starting..." else "Connecting...")
-                    } else {
-                        val buttonText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
-                            "Enable Notifications & Initialize"
-                        } else {
-                            "Download Intelligence"
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Downloading... ${(downloadProgress!! * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+
+                    // Main Action Button
+                    val buttonText = when {
+                        !sdkInitialized -> "Initializing..."
+                        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission -> "Enable Notifications"
+                        isDownloading -> "Downloading..."
+                        else -> "Download Intelligence"
+                    }
+
+                    Button(
+                        onClick = {
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission) {
+                                permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                            } else {
+                                selectedModelId?.let { viewModel.startDownload(it) }
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        enabled = sdkInitialized && !isDownloading && selectedModelId != null
+                    ) {
+                        if (sdkInitialized) {
+                            Icon(
+                                imageVector = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !hasNotificationPermission)
+                                    Icons.Filled.CheckCircle else Icons.Filled.CloudDownload,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
                         }
-                        
-                        Icon(
-                            imageVector = Icons.Filled.CloudDownload,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = buttonText,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold
+                            style = MaterialTheme.typography.labelLarge
                         )
                     }
                 }
             }
-            
-            // Reset initializing state if download starts or fails
-            LaunchedEffect(downloadProgress, statusMessage) {
-                if (downloadProgress != null || statusMessage.contains("failed") || statusMessage.contains("cancelled")) {
-                    isInitializing = false
-                }
-            }
-            
-            Spacer(modifier = Modifier.height(24.dp))
-            
-            // Test Button for WorkManager
-            Button(
-                onClick = { enqueueProcessingJob(context) },
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
-            ) {
-                Text("Test Background Processing")
-            }
-            
-            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
 
-fun enqueueProcessingJob(context: Context) {
-    val workManager = WorkManager.getInstance(context)
-    val inputData = workDataOf("INPUT_DATA" to "Test Document")
-    
-    val request = OneTimeWorkRequestBuilder<LlmWorker>()
-        .setInputData(inputData)
-        .build()
-        
-    workManager.enqueue(request)
-}
-
 @Composable
-fun ModelOptionCard(
+fun SelectableModelCard(
     title: String,
-    description: String,
-    icon: ImageVector,
+    subtitle: String,
     isSelected: Boolean,
-    isEnabled: Boolean = true,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    enabled: Boolean = true
 ) {
-    val borderColor = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
-    val backgroundColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f) else MaterialTheme.colorScheme.surface
-    val alpha = if (isEnabled) 1f else 0.5f
+    val borderColor = if (isSelected && enabled) 
+        MaterialTheme.colorScheme.primary 
+    else 
+        MaterialTheme.colorScheme.outlineVariant
+    
+    val containerColor = if (isSelected && enabled) 
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f) 
+    else 
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
 
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .border(2.dp, borderColor, RoundedCornerShape(12.dp))
-            .clickable(enabled = isEnabled, onClick = onClick),
-        color = backgroundColor.copy(alpha = if (isSelected) 0.1f else 1f).copy(alpha = alpha) // Adjust alpha for disabled state
+    ElevatedCard(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.elevatedCardColors(containerColor = containerColor),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = if (isSelected) 4.dp else 0.dp
+        ),
+        enabled = enabled
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = (if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = alpha),
-                modifier = Modifier.size(32.dp)
-            )
-            Spacer(modifier = Modifier.width(16.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha)
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (enabled) MaterialTheme.colorScheme.onSurface 
+                           else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                 )
-                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha)
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant 
+                           else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
                 )
             }
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(16.dp))
             Icon(
-                imageVector = if (isSelected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
-                contentDescription = null,
-                tint = (if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant).copy(alpha = alpha)
+                imageVector = if (isSelected) Icons.Filled.RadioButtonChecked else Icons.Filled.RadioButtonUnchecked,
+                contentDescription = if (isSelected) "Selected" else "Not selected",
+                tint = if (enabled && isSelected) MaterialTheme.colorScheme.primary 
+                       else if (enabled) MaterialTheme.colorScheme.outline
+                       else MaterialTheme.colorScheme.outline.copy(alpha = 0.38f)
             )
         }
     }

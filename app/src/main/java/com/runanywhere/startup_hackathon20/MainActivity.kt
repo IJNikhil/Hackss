@@ -37,12 +37,11 @@ fun AppContent(viewModel: ChatViewModel = viewModel()) {
     var isCheckingStatus by remember { mutableStateOf(true) }
     var showOnboarding by remember { mutableStateOf(true) }
 
-    val targetModelName = "Phi-3 Mini 4k Instruct (Q4)"
-
     LaunchedEffect(availableModels) {
         if (availableModels.isNotEmpty()) {
-            val targetModel = availableModels.find { it.name == targetModelName }
-            if (targetModel?.isDownloaded == true) {
+            // Check if ANY of our registered models are already downloaded
+            val anyModelDownloaded = availableModels.any { it.isDownloaded }
+            if (anyModelDownloaded) {
                 showOnboarding = false
             }
             isCheckingStatus = false
